@@ -22,3 +22,8 @@ numpy>=1.26.0
 # Testing and evaluation
 ragas>=0.1.0
 datasets>=2.14.0
+
+# FastAPI and web server
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
