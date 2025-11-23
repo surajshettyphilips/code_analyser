@@ -1,0 +1,35 @@
+# Application Settings
+app:
+  name: "PySpark Code Analyzer"
+  version: "1.0.0"
+
+# Chunking Settings
+chunking:
+  chunk_size: 25000  # tokens per chunk
+  overlap_size: 5000  # overlapping tokens
+  encoding: "cl100k_base"  # tiktoken encoding
+
+# ChromaDB Settings
+chromadb:
+  collection_name: "pyspark_code_chunks"
+  persist_directory: "c:\\Users\\320196443\\codellama\\chromadb"
+  embedding_function: "sentence-transformers/all-MiniLM-L6-v2"
+
+# LLM Settings
+llm:
+  provider: "ollama"
+  model: "codellama:7b"
+  base_url: "http://localhost:11434"
+  temperature: 0.1
+  max_tokens: 2048
+
+# DSPy Settings
+dspy:
+  cache_dir: "./.dspy_cache"
+  max_bootstrapped_demos: 4
+  max_labeled_demos: 16
+
+# LangGraph Settings
+langgraph:
+  max_iterations: 10
+  recursion_limit: 25

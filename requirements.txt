@@ -1,0 +1,24 @@
+# Core dependencies
+chromadb>=0.5.0
+dspy-ai>=2.4.0
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-community>=0.3.0
+tiktoken>=0.7.0
+
+# LLM and embeddings
+ollama>=0.3.0
+sentence-transformers>=3.0.0
+
+# Data processing
+pyspark>=3.5.0
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+
+# Utilities
+tqdm>=4.66.0
+numpy>=1.26.0
+
+# Testing and evaluation
+ragas>=0.1.0
+datasets>=2.14.0
