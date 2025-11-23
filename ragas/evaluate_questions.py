@@ -2,13 +2,29 @@
 RAGAs evaluation script for batch question processing.
 Reads questions from Excel, queries Stage 2, and evaluates with RAGAs.
 """
-import pandas as pd
 import os
+# Disable PostHog telemetry to avoid SSL errors
+os.environ['POSTHOG_DISABLED'] = '1'
+os.environ['DISABLE_TELEMETRY'] = '1'
+
+import pandas as pd
 import sys
 from pathlib import Path
 from typing import List, Dict
 import logging
 from datetime import datetime
+
+# Disable additional telemetry
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='posthog')
+
+# Suppress SSL and PostHog errors BEFORE any other imports
+logging.basicConfig(level=logging.INFO)
+logging.getLogger('posthog').setLevel(logging.CRITICAL)
+logging.getLogger('posthog').disabled = True
+logging.getLogger('backoff').setLevel(logging.CRITICAL)
+logging.getLogger('urllib3').setLevel(logging.CRITICAL)
+logging.getLogger('urllib3.connectionpool').setLevel(logging.CRITICAL)
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -24,6 +40,7 @@ from ragas.metrics import (
     context_recall,
     context_precision
 )
+
 from langchain_community.llms import Ollama
 from langchain_community.embeddings import OllamaEmbeddings
 

@@ -7,10 +7,22 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Optional
+import logging
+
+# Disable PostHog telemetry to avoid SSL errors
+os.environ['POSTHOG_DISABLED'] = '1'
+os.environ['DISABLE_TELEMETRY'] = '1'
+
+# Suppress PostHog and SSL error logging
+logging.getLogger('posthog').setLevel(logging.CRITICAL)
+logging.getLogger('backoff').setLevel(logging.CRITICAL)
+logging.getLogger('urllib3').setLevel(logging.CRITICAL)
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+import pandas as pd
 
 # Import existing components
 import sys
@@ -20,6 +32,10 @@ from src.chunker import CodeChunker
 from src.chromadb_manager import ChromaDBManager
 from src.dspy_analyzer import DSPyOptimizer
 from src.config_loader import Config
+
+# Import RAGAs evaluator
+sys.path.insert(0, str(Path(__file__).parent.parent / "ragas"))
+from evaluate_questions import RAGasEvaluator
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -47,7 +63,16 @@ chromadb_manager = ChromaDBManager(
     persist_directory=config.get('chromadb.persist_directory', './chromadb'),
     collection_name=config.get('chromadb.collection_name', 'pyspark_code_chunks')
 )
-dspy_optimizer = DSPyOptimizer(config)
+dspy_optimizer = DSPyOptimizer(
+    model_name=config.get('llm.model', 'codellama:7b'),
+    cache_dir=config.get('dspy.cache_dir', './.dspy_cache')
+)
+# Setup the language model for DSPy
+dspy_optimizer.setup_lm(
+    base_url=config.get('llm.base_url', 'http://localhost:11434'),
+    temperature=config.get('llm.temperature', 0.1),
+    max_tokens=config.get('llm.max_tokens', 2048)
+)
 
 # Response models
 class UploadResponse(BaseModel):
@@ -166,7 +191,7 @@ async def query_code(request: QueryRequest):
         # Query ChromaDB for relevant chunks
         print(f"Querying ChromaDB: {request.question}")
         relevant_chunks = chromadb_manager.query_relevant_chunks(
-            query_text=request.question,
+            query=request.question,
             n_results=request.n_results
         )
         
@@ -177,9 +202,9 @@ async def query_code(request: QueryRequest):
             )
         
         # Use DSPy to analyze and answer
-        print(f"Analyzing with DSPy")
+        print("Analyzing with DSPy")
         analysis = dspy_optimizer.analyze_code(
-            code_snippets=relevant_chunks,
+            relevant_chunks=relevant_chunks,
             query=request.question
         )
         
@@ -214,11 +239,11 @@ async def query_code(request: QueryRequest):
 async def collection_info():
     """Get information about the ChromaDB collection"""
     try:
-        count = chromadb_manager.get_collection_count()
+        info = chromadb_manager.get_collection_info()
         return {
-            "collection_name": config.chromadb['collection_name'],
-            "total_chunks": count,
-            "persist_directory": config.chromadb['persist_directory']
+            "collection_name": info.get("name", config.get('chromadb.collection_name')),
+            "total_chunks": info.get("count", 0),
+            "persist_directory": info.get("persist_directory", config.get('chromadb.persist_directory'))
         }
     except Exception as e:
         raise HTTPException(
@@ -234,7 +259,7 @@ async def reset_collection():
         chromadb_manager.reset_collection()
         return {
             "message": "Collection reset successfully",
-            "collection_name": config.chromadb['collection_name']
+            "collection_name": config.get('chromadb.collection_name')
         }
     except Exception as e:
         raise HTTPException(
@@ -243,6 +268,94 @@ async def reset_collection():
         )
 
 
+class EvalResponse(BaseModel):
+    message: str
+    results_file: str
+    total_questions: int
+    results: list[dict]
+
+
+@app.post("/eval", response_model=EvalResponse)
+async def evaluate_questions(file: UploadFile = File(...)):
+    """
+    Run RAGAs evaluation on uploaded Excel file with questions and ground truth.
+    
+    Args:
+        file: Excel file with columns: question, ground_truth, answer (optional)
+        
+    Returns:
+        Evaluation results with RAGAs metrics
+    """
+    try:
+        # Validate file type
+        if not file.filename.endswith(('.xlsx', '.xls')):
+            raise HTTPException(
+                status_code=400,
+                detail="Only Excel files (.xlsx, .xls) are supported"
+            )
+        
+        # Read and save uploaded file
+        content = await file.read()
+        input_file = Path("ragas") / "temp_input.xlsx"
+        output_file = Path("ragas") / "temp_output_evaluated.xlsx"
+        
+        # Save uploaded file
+        with open(input_file, 'wb') as f:
+            f.write(content)
+        
+        try:
+            # Run the evaluation directly using RAGasEvaluator
+            print(f"Running RAGAs evaluation on {file.filename}")
+            evaluator = RAGasEvaluator(
+                input_excel=str(input_file),
+                output_excel=str(output_file)
+            )
+            evaluator.run()
+            
+            # Read the evaluated results
+            if not output_file.exists():
+                raise HTTPException(
+                    status_code=500,
+                    detail="Evaluation completed but output file not found"
+                )
+            
+            df = pd.read_excel(output_file)
+            
+            # Convert to list of dicts for response
+            results = df.to_dict('records')
+            
+            # Clean up temp input file
+            if input_file.exists():
+                os.unlink(input_file)
+            
+            return EvalResponse(
+                message="Evaluation completed successfully",
+                results_file=str(output_file),
+                total_questions=len(results),
+                results=results
+            )
+            
+        except Exception as eval_error:
+            print(f"Evaluation error: {str(eval_error)}")
+            # Clean up on error
+            if input_file.exists():
+                os.unlink(input_file)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Evaluation failed: {str(eval_error)}"
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in evaluation: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing evaluation: {str(e)}"
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

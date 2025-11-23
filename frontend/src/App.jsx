@@ -1,14 +1,22 @@
 import React, { useState } from 'react';
 import FileUpload from './components/FileUpload';
 import QuerySection from './components/QuerySection';
+import EvalSection from './components/EvalSection';
 import './App.css';
 
 function App() {
   const [uploadStatus, setUploadStatus] = useState(null);
   const [collectionInfo, setCollectionInfo] = useState(null);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
 
   const handleUploadSuccess = (response) => {
     setUploadStatus(response);
+    // Add to uploaded files list
+    setUploadedFiles(prev => [...prev, {
+      filename: response.filename,
+      chunks: response.chunks_indexed,
+      timestamp: new Date().toLocaleString()
+    }]);
     // Refresh collection info after successful upload
     fetchCollectionInfo();
   };
@@ -52,12 +60,39 @@ function App() {
               Indexed {uploadStatus.chunks_indexed} chunks
             </div>
           )}
+          
+          {uploadedFiles.length > 0 && (
+            <div className="uploaded-files-list">
+              <h3>📁 Uploaded Files</h3>
+              <div className="files-container">
+                {uploadedFiles.map((file, index) => (
+                  <div key={index} className="file-card">
+                    <div className="file-icon">📄</div>
+                    <div className="file-details">
+                      <div className="file-name">{file.filename}</div>
+                      <div className="file-meta">
+                        <span className="file-chunks">{file.chunks} chunks</span>
+                        <span className="file-timestamp">{file.timestamp}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <div className="divider"></div>
+
+        <section className="eval-section-wrapper">
+          <h2>🎯 Step 3: Evaluate with RAGAs</h2>
+          <EvalSection />
         </section>
 
         <div className="divider"></div>
 
         <section className="query-section">
-          <h2>🔎 Step 2: Ask Questions</h2>
+          <h2>🔎 Step 4: Ask Questions</h2>
           <QuerySection />
         </section>
       </main>
