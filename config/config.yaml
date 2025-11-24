@@ -5,8 +5,8 @@ app:
 
 # Chunking Settings
 chunking:
-  chunk_size: 25000  # tokens per chunk
-  overlap_size: 5000  # overlapping tokens
+  chunk_size: 4000  # tokens per chunk
+  overlap_size: 500  # overlapping tokens
   encoding: "cl100k_base"  # tiktoken encoding
 
 # ChromaDB Settings

@@ -170,13 +170,14 @@ class ChromaDBManager:
         """
         try:
             # Query the collection
+            # ChromaDB automatically returns top N results sorted by vector similarity (lowest distance = most similar)
             results = self.collection.query(
                 query_texts=[query],
-                n_results=n_results,
+                n_results=n_results,  # Top N most similar chunks by cosine distance
                 where=filter_metadata if filter_metadata else None
             )
             
-            # Format results
+            # Format results (already sorted by vector similarity from ChromaDB)
             relevant_chunks = []
             if results['documents'] and len(results['documents']) > 0:
                 for i in range(len(results['documents'][0])):
@@ -184,7 +185,7 @@ class ChromaDBManager:
                         "content": results['documents'][0][i],
                         "text": results['documents'][0][i],
                         "metadata": results['metadatas'][0][i],
-                        "distance": results['distances'][0][i] if 'distances' in results else None
+                        "distance": results['distances'][0][i] if 'distances' in results else None  # Cosine distance score
                     }
                     relevant_chunks.append(chunk)
             
@@ -290,22 +291,111 @@ class ChromaDBManager:
         except Exception as e:
             logger.error(f"Error clearing collection: {e}")
             return False
+    
+    def get_metadata_facets(self) -> Dict[str, List[str]]:
         """
-        Clear all documents from the collection.
+        Get all unique values for each metadata field (facets) in the collection.
+        Useful for building faceted search filters.
         
         Returns:
-            True if successful, False otherwise
+            Dictionary mapping metadata field names to lists of unique values
         """
         try:
-            # Get all IDs
-            results = self.collection.get()
-            if results['ids']:
-                self.collection.delete(ids=results['ids'])
-                logger.info(f"Cleared {len(results['ids'])} documents from collection")
-            return True
+            # Get all documents with metadata
+            results = self.collection.get(include=['metadatas'])
+            
+            if not results['metadatas']:
+                return {}
+            
+            # Collect all unique values for each metadata field
+            facets = {}
+            for metadata in results['metadatas']:
+                for key, value in metadata.items():
+                    if key not in facets:
+                        facets[key] = set()
+                    facets[key].add(str(value))
+            
+            # Convert sets to sorted lists
+            facets = {k: sorted(list(v)) for k, v in facets.items()}
+            
+            logger.info(f"Retrieved facets for {len(facets)} metadata fields")
+            return facets
+            
         except Exception as e:
-            logger.error(f"Error clearing collection: {e}")
-            return False
+            logger.error(f"Error getting metadata facets: {e}")
+            return {}
+    
+    def query_with_facets(
+        self,
+        query: str,
+        n_results: int = 2,
+        facet_filters: Optional[Dict[str, str]] = None,
+        include_facets: bool = True
+    ) -> Dict:
+        """
+        Query with faceted search support.
+        
+        Args:
+            query: User query about the code
+            n_results: Number of results to return
+            facet_filters: Dictionary of metadata field filters (e.g., {"file_name": "main.py", "alert_name": "PO_DUE"})
+            include_facets: Whether to include available facets in response
+            
+        Returns:
+            Dictionary with 'chunks' and optionally 'facets'
+        """
+        try:
+            # Build where clause for facet filtering
+            where_clause = None
+            if facet_filters:
+                # For multiple filters, use $and operator
+                if len(facet_filters) == 1:
+                    key, value = list(facet_filters.items())[0]
+                    where_clause = {key: {"$eq": value}}
+                else:
+                    where_clause = {
+                        "$and": [
+                            {key: {"$eq": value}}
+                            for key, value in facet_filters.items()
+                        ]
+                    }
+            
+            # Query with filters
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                where=where_clause if where_clause else None
+            )
+            
+            # Format results
+            relevant_chunks = []
+            if results['documents'] and len(results['documents']) > 0:
+                for i in range(len(results['documents'][0])):
+                    chunk = {
+                        "content": results['documents'][0][i],
+                        "text": results['documents'][0][i],
+                        "metadata": results['metadatas'][0][i],
+                        "distance": results['distances'][0][i] if 'distances' in results else None
+                    }
+                    relevant_chunks.append(chunk)
+            
+            response = {
+                "chunks": relevant_chunks,
+                "query": query,
+                "filters_applied": facet_filters or {},
+                "n_results": len(relevant_chunks)
+            }
+            
+            # Include available facets if requested
+            if include_facets:
+                response["available_facets"] = self.get_metadata_facets()
+            
+            logger.info(f"Retrieved {len(relevant_chunks)} chunks with faceted search")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error in faceted search: {e}")
+            return {"chunks": [], "facets": {}, "error": str(e)}
 
 
 def main():

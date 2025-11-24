@@ -17,9 +17,11 @@ class Stage1State(TypedDict):
     file_path: str
     file_content: str
     chunks: List[Dict]
+    embedded_chunks: List[Dict]
     chromadb_status: str
     error: str
     chunk_count: int
+    embedding_status: str
 
 
 # State definitions for Stage 2 (Query and Analysis)
@@ -35,16 +37,18 @@ class Stage2State(TypedDict):
 class Stage1Workflow:
     """LangGraph workflow for Stage 1: Chunking and Embedding."""
     
-    def __init__(self, chunker, chromadb_manager):
+    def __init__(self, chunker, chromadb_manager, ollama_embedder=None):
         """
         Initialize Stage 1 workflow.
         
         Args:
             chunker: CodeChunker instance
             chromadb_manager: ChromaDBManager instance
+            ollama_embedder: Optional Ollama embedder for custom embeddings
         """
         self.chunker = chunker
         self.chromadb_manager = chromadb_manager
+        self.ollama_embedder = ollama_embedder
         self.graph = self._build_graph()
     
     def _build_graph(self) -> StateGraph:
@@ -54,13 +58,15 @@ class Stage1Workflow:
         # Add nodes
         workflow.add_node("read_file", self._read_file)
         workflow.add_node("chunk_content", self._chunk_content)
+        workflow.add_node("embed_chunks", self._embed_chunks)
         workflow.add_node("store_in_chromadb", self._store_in_chromadb)
         workflow.add_node("finalize", self._finalize)
         
         # Add edges
         workflow.set_entry_point("read_file")
         workflow.add_edge("read_file", "chunk_content")
-        workflow.add_edge("chunk_content", "store_in_chromadb")
+        workflow.add_edge("chunk_content", "embed_chunks")
+        workflow.add_edge("embed_chunks", "store_in_chromadb")
         workflow.add_edge("store_in_chromadb", "finalize")
         workflow.add_edge("finalize", END)
         
@@ -95,6 +101,46 @@ class Stage1Workflow:
             logger.error(state['error'])
         return state
     
+    def _embed_chunks(self, state: Stage1State) -> Stage1State:
+        """Generate Ollama-based embeddings for chunks to improve retrieval relevance."""
+        try:
+            if state.get('error'):
+                return state
+            
+            logger.info("Generating Ollama embeddings for chunks")
+            
+            if self.ollama_embedder:
+                # Use custom Ollama embedder if provided
+                embedded_chunks = []
+                for chunk in state['chunks']:
+                    try:
+                        # Generate embedding using Ollama
+                        embedding = self.ollama_embedder.embed(chunk.get('text', ''))
+                        chunk['embedding'] = embedding
+                        embedded_chunks.append(chunk)
+                    except Exception as e:
+                        logger.warning(f"Failed to embed chunk {chunk.get('metadata', {}).get('chunk_id', 'unknown')}: {e}")
+                        # Keep chunk without custom embedding - ChromaDB will use default
+                        embedded_chunks.append(chunk)
+                
+                state['embedded_chunks'] = embedded_chunks
+                state['embedding_status'] = "success"
+                logger.info(f"Generated embeddings for {len(embedded_chunks)} chunks using Ollama")
+            else:
+                # No custom embedder - use ChromaDB's default embedding
+                state['embedded_chunks'] = state['chunks']
+                state['embedding_status'] = "default"
+                logger.info("Using ChromaDB default embeddings (no custom Ollama embedder provided)")
+                
+        except Exception as e:
+            state['embedding_status'] = "failed"
+            state['error'] = f"Error generating embeddings: {str(e)}"
+            logger.error(state['error'])
+            # Fall back to original chunks
+            state['embedded_chunks'] = state['chunks']
+        
+        return state
+    
     def _store_in_chromadb(self, state: Stage1State) -> Stage1State:
         """Store chunks in ChromaDB."""
         try:
@@ -102,11 +148,13 @@ class Stage1Workflow:
                 return state
             
             logger.info("Storing chunks in ChromaDB")
-            success = self.chromadb_manager.add_chunks(state['chunks'])
+            # Use embedded chunks if available, otherwise fall back to original chunks
+            chunks_to_store = state.get('embedded_chunks', state['chunks'])
+            success = self.chromadb_manager.add_chunks(chunks_to_store)
             
             if success:
                 state['chromadb_status'] = "success"
-                logger.info("Chunks stored successfully")
+                logger.info(f"Chunks stored successfully with {state.get('embedding_status', 'default')} embeddings")
             else:
                 state['chromadb_status'] = "failed"
                 state['error'] = "Failed to store chunks in ChromaDB"
@@ -139,9 +187,11 @@ class Stage1Workflow:
             file_path=file_path,
             file_content="",
             chunks=[],
+            embedded_chunks=[],
             chromadb_status="",
             error="",
-            chunk_count=0
+            chunk_count=0,
+            embedding_status=""
         )
         
         final_state = self.graph.invoke(initial_state)
@@ -186,7 +236,7 @@ class Stage2Workflow:
             logger.info(f"Retrieving relevant chunks for query: {state['query']}")
             chunks = self.chromadb_manager.query_relevant_chunks(
                 query=state['query'],
-                n_results=5
+                n_results=1
             )
             state['relevant_chunks'] = chunks
             state['chunk_count'] = len(chunks)
